@@ -5,21 +5,17 @@ See its [GitHub page](https://github.com/pjssilva/NLPModelsAlgencan.jl)
 module NLPModelsAlgencan
 
 using LinearAlgebra, SparseArrays, NLPModels, SolverTools, SolverCore
-import Libdl
-
-# Gets the path of the Algencan library
-if "ALGENCAN_LIB_DIR" in keys(ENV)
-    const algencan_lib_path = string(joinpath(ENV["ALGENCAN_LIB_DIR"],
-        "libalgencan.so"))
-elseif isfile(joinpath(dirname(@__FILE__), "..", "deps", "deps.jl"))
-    include("../deps/deps.jl")
-    const algencan_lib_path = libalgencan
-else
-    error("Algencan not properly installed. Please run Pkg.build(\"NLPModelsAlgencan\")")
-    error("or set the ALGENCAN_LIB_DIR enviroment variable.")
-end
+import Algencan_jll, OpenBLAS32_jll
+const libalgencan = Algencan_jll.libalgencan
 
 export algencan
+
+function __init__()
+    config = LinearAlgebra.BLAS.lbt_get_config()
+    if !any(lib -> lib.interface == :lp64, config.loaded_libs)
+        LinearAlgebra.BLAS.lbt_forward(OpenBLAS32_jll.libopenblas_path)
+    end
+end
 
 "Processes and stores data from an AbstractNLPModel to be used by Algencan
 subroutines"
@@ -232,65 +228,46 @@ function algencan(nlp::AbstractNLPModel; kwargs...)
     nlpsupn = [0.0]
     inform = Vector{Cint}([0])
 
-    @assert !(algencan_lib_path in Libdl.dllist())
-    algencandl = Libdl.dlopen(algencan_lib_path)
-    @assert algencan_lib_path in Libdl.dllist()
-    algencansym = Libdl.dlsym(algencandl, :c_algencan)
-    try
-        ccall(
-            algencansym,                                     # function
-            Nothing,                                         # Return type
-            (                                                # Parameters types
-                Ptr{Nothing},                                # *myevalf,
-                Ptr{Nothing},                                # *myevalg,
-                Ptr{Nothing},                                # *myevalh,
-                Ptr{Nothing},                                # *myevalc,
-                Ptr{Nothing},                                # *myevaljac,
-                Ptr{Nothing},                                # *myevalhc,
-                Ptr{Nothing},                                # *myevalfc,
-                Ptr{Nothing},                                # *myevalgjac,
-                Ptr{Nothing},                                # *myevalgjacp,
-                Ptr{Nothing},                                # *myevalhl,
-                Ptr{Nothing},                                # *myevalhlp,
-                Cint,                                        # jcnnzmax,
-                Cint,                                        # hnnzmax,
-                Ref{Cdouble},                                # *epsfeas,
-                Ref{Cdouble},                                # *epsopt,
-                Ref{Cdouble},                                # *efstain,
-                Ref{Cdouble},                                # *eostain,
-                Ref{Cdouble},                                # *efacc,
-                Ref{Cdouble},                                # *eoacc,
-                Cstring,                                     # *outputfnm,
-                Cstring,                                     # *specfnm,
-                Cint,                                        # nvparam,
-                Ptr{Ptr{UInt8}},                             # **vparam,
-                Cint,                                        # int n,
-                Ref{Cdouble},                                # *x,
-                Ref{Cdouble},                                # *l,
-                Ref{Cdouble},                                # *u,
-                Cint,                                        #  m,
-                Ref{Cdouble},                                # double *lambda,
-                Ref{UInt8},                                  # *equatn,
-                Ref{UInt8},                                  # _Bool *linear,
-                Ref{UInt8},                                  # _Bool *coded,
-                UInt8,                                       # _Bool checkder,
-                Ref{Cdouble},                                # double *f,
-                Ref{Cdouble},                                # double *cnorm,
-                Ref{Cdouble},                                # double *snorm,
-                Ref{Cdouble},                                # double *nlpsupn,
-                Ref{Cint}                                    # int *inform
-            ),
-            myevalf, myevalg, myevalh, myevalc, myevaljac, myevalhc, myevalfc,
-            myevalgjac, myevalgjacp, myevalhl, myevalhlp, jcnnzmax, hnnzmax,
-            epsfeas, epsopt, efstain, eostain, efacc, eoacc, outputfnm, specfnm,
-            nvparam, vparam, model.n, model.x, model.lb, model.ub, m, mult,
-            is_equality, is_g_linear, coded, checkder, f, cnorm, snorm,
-            nlpsupn, inform
-        )
-    finally
-        Libdl.dlclose(algencandl)
-        @assert !(algencan_lib_path in Libdl.dllist())
-    end
+    @ccall libalgencan.c_algencan(
+        myevalf::Ptr{Cvoid},           # Function to evaluate the objective function
+        myevalg::Ptr{Cvoid},           # Function to evaluate the gradient
+        myevalh::Ptr{Cvoid},           # Function to evaluate the Hessian
+        myevalc::Ptr{Cvoid},           # Function to evaluate the constraints
+        myevaljac::Ptr{Cvoid},         # Function to evaluate the Jacobian of the constraints
+        myevalhc::Ptr{Cvoid},          # Function to evaluate the Hessian of the constraints
+        myevalfc::Ptr{Cvoid},          # Function to evaluate the combined objective and constraints
+        myevalgjac::Ptr{Cvoid},        # Function to evaluate the Jacobian of the gradients
+        myevalgjacp::Ptr{Cvoid},       # Function to evaluate the Jacobian with respect to parameters
+        myevalhl::Ptr{Cvoid},          # Function to evaluate the Lagrangian Hessian
+        myevalhlp::Ptr{Cvoid},         # Function to evaluate the Hessian with respect to parameters
+        jcnnzmax::Cint,                # Maximum number of non-zeros in the Jacobian
+        hnnzmax::Cint,                 # Maximum number of non-zeros in the Hessian
+        epsfeas::Ref{Cdouble},         # Tolerance for feasibility
+        epsopt::Ref{Cdouble},          # Tolerance for optimality
+        efstain::Ref{Cdouble},         # Initial feasibility tolerance
+        eostain::Ref{Cdouble},         # Final feasibility tolerance
+        efacc::Ref{Cdouble},           # Initial accuracy tolerance
+        eoacc::Ref{Cdouble},           # Final accuracy tolerance
+        outputfnm::Cstring,            # Filename for output
+        specfnm::Cstring,              # Filename for the specifications
+        nvparam::Cint,                 # Number of parameters
+        vparam::Ptr{Ptr{UInt8}},       # Array of parameter values
+        model.n::Cint,                 # Number of variables
+        model.x::Ref{Cdouble},         # Initial values of variables
+        model.lb::Ref{Cdouble},        # Lower bounds of the variables
+        model.ub::Ref{Cdouble},        # Upper bounds of the variables
+        m::Cint,                       # Number of constraints
+        mult::Ref{Cdouble},            # Multipliers for the constraints
+        is_equality::Ref{UInt8},       # Boolean indicating if the constraints are equalities
+        is_g_linear::Ref{UInt8},       # Boolean indicating if the constraints are linear
+        coded::Ref{UInt8},             # Boolean indicating if the function is coded
+        checkder::UInt8,               # Boolean indicating if derivative checks should be performed
+        f::Ref{Cdouble},               # Objective function value
+        cnorm::Ref{Cdouble},           # Norm of the constraint violations
+        snorm::Ref{Cdouble},           # Norm of the step size
+        nlpsupn::Ref{Cdouble},         # Norm of the Lagrangian
+        inform::Ref{Cint}              # Information on the status of the algorithm
+    )::Cvoid
 
     # Fix sign of objetive function
     model.obj_val = model.sense * f[1]
